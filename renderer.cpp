@@ -7,6 +7,8 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#include <limits>
+
 const double PI = 3.1415926535897932; 
  
 class Vector{
@@ -53,8 +55,16 @@ Vector operator-(const Vector& a, const Vector& b){
     return Vector(a[0]-b[0], a[1]-b[1], a[2]-b[2]);
 }
 
+Vector operator*(const double x, const Vector& a){
+    return Vector(x*a[0], x*a[1], x*a[2]);
+}
+
 double dot(const Vector& a, const Vector& b){
     return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+}
+
+double gammaCorrection(const double gamma, const double x){
+    return std::min(255., pow(x, 1/gamma));
 }
 
 
@@ -121,6 +131,14 @@ public:
         return true;
     }
 
+    Vector getAlbedo(){
+        return albedo;
+    }
+
+    Vector getCenter(){
+        return C;
+    }
+
 private:
     Vector C; 
     double R;
@@ -129,37 +147,72 @@ private:
 
 class Scene{
 public:
-    Scene(){
+    Scene(Vector source, double I){
+        lightSource = source;
+        lightIntensity = I;
         list_objects = {};
     }
 
-    bool intersect(const Ray& ray){
-        return true;
+    int intersect(const Ray& ray, double& t){
+        double t_min = std::numeric_limits<int>::max(); 
+        int i_min = -1;
+        for (int i=0; i<list_objects.size(); i++){
+            if (list_objects[i].intersect(ray, t)){
+                if (t < t_min){
+                    t_min = t;
+                    i_min = i;
+                }
+            }
+        }
+        t = t_min;
+        return i_min;
+    }
+
+    Sphere getObject(int index){
+        return list_objects[index];
     }
 
     void add(Sphere S){
         list_objects.push_back(S);
     }
 
+    Vector getLightSource(){
+        return lightSource;
+    }
+
+    double getLightIntensity(){
+        return lightIntensity;
+    }
+
 private:
     std::vector<Sphere> list_objects; 
+    Vector lightSource;
+    double lightIntensity;
 };
 
  
 int main() {
     int W = 512;
     int H = 512;
-
+    const double gamma = 2.2;
 
     // horizontal field of view
     const double fov = 60*(PI/180);
     const Vector camera(0,0,55);
-    Vector light(-10, 20, 40);
     //light.normalize();
     
-    Scene scene;
-    Sphere centralSphere(Vector(0.,0.,0.), 10, Vector(255.,255.,255.));
+    Scene scene(Vector(-10, 20, 40), 1e8);
+    Sphere centralSphere(Vector(0., 0., 0.), 10, Vector(255.,255.,255.));
+    Sphere leftSphere(Vector(0., 0., 1000.), 940, Vector(255., 0., 255.));
+    Sphere rearSphere(Vector(0., -1000., 0.), 990, Vector(0., 0., 255.));
+    Sphere rightSphere(Vector(0.,0.,-1000.), 940, Vector(0., 255., 0.));
+    Sphere topSphere(Vector(0., 1000., 0.), 940, Vector(255., 0., 0.));
+
     scene.add(centralSphere);
+    scene.add(leftSphere);
+    scene.add(rearSphere);
+    scene.add(rightSphere);
+    scene.add(topSphere);
     
     std::vector<unsigned char> image(W*H*3, 0);
     double t = 0.;
@@ -169,15 +222,36 @@ int main() {
             Ray R(camera, Vector(camera[0]+j-W/2+0.5, camera[1]+H/2-i-0.5, camera[2]-W/(2*tan(fov/2))));
             R.normalize();
 
-            if (centralSphere.intersect(R,t)){
-                image[(i*W + j) * 3 + 0] = 255;
-                image[(i*W + j) * 3 + 1] = 255;
-                image[(i*W + j) * 3 + 2] = 255;
+            int i_min = scene.intersect(R, t);
+            if (i_min >= 0){
+                // intersection point
+                Vector P = R.getOrigin() + t*R.getDirection();
+
+                // intersection object closest to camera
+                Sphere sphereIntersected = scene.getObject(i_min);
+                Vector C = sphereIntersected.getCenter();
+
+                // normal vector at the intersection point
+                Vector N = P-C;
+                N.normalize();
+
+                Vector omega = scene.getLightSource()-P;
+                double d2 = omega.norm2();
+                omega.normalize();
+                Ray PLight(P+0.001*N, omega);
+                Vector color(0., 0., 0.);
+                // Add normal light if light source is visible from P
+                int i_min_shadow = scene.intersect(PLight, t);
+                if (i_min_shadow == -1 || t*t > d2){
+                    color = (scene.getLightIntensity()/(4*pow(PI,2)*d2))*std::max(0.,dot(N,omega))*sphereIntersected.getAlbedo();
+                }
+                image[(i*W + j) * 3 + 0] = gammaCorrection(gamma, color[0]);
+                image[(i*W + j) * 3 + 1] = gammaCorrection(gamma, color[1]);
+                image[(i*W + j) * 3 + 2] = gammaCorrection(gamma, color[2]);
             }
- 
         }
     }
-    stbi_write_png("image_sphere.png", W, H, 3, &image[0], 0);
+    stbi_write_png("image_v2.png", W, H, 3, &image[0], 0);
  
     return 0;
 }
