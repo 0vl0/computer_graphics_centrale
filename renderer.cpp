@@ -70,9 +70,10 @@ double gammaCorrection(const double gamma, const double x){
 
 class Ray{
 public:
-    explicit Ray(Vector origin, Vector direction){
+    explicit Ray(Vector origin, Vector direction, int d=5){
         O = origin;
         u = direction;
+        depth = d;
     }
 
     void normalize(){
@@ -85,18 +86,22 @@ public:
     const Vector getDirection() const {return u;}
     const Vector getOrigin() const {return O;}
 
+    const int getDepth() const {return depth;}
+
 private:
     Vector O; 
     Vector u;
+    int depth;
 };
 
 
 class Sphere{
 public:
-    explicit Sphere(Vector center, double radius, Vector color){
+    explicit Sphere(Vector center, double radius, Vector color, bool r=false){
         C = center; 
         R = radius;
         albedo = color;
+        reflective = r;
     }
 
 
@@ -139,10 +144,15 @@ public:
         return C;
     }
 
+    bool isReflective(){
+        return reflective;
+    }
+
 private:
     Vector C; 
     double R;
     Vector albedo;
+    bool reflective;
 };
 
 class Scene{
@@ -168,6 +178,54 @@ public:
         return i_min;
     }
 
+    Vector getColor(const Ray& R){
+        Vector color(0., 0., 255.);
+        if (R.getDepth() < 0){
+            return Vector(1000000.,0.,0.);
+        }
+
+        double t = 0.;
+        int i_min = intersect(R, t);
+        if (i_min >= 0){
+            // intersection point
+            Vector P = R.getOrigin() + t*R.getDirection();
+
+            // intersection object closest to camera
+            Sphere sphereIntersected = getObject(i_min);
+            Vector C = sphereIntersected.getCenter();
+
+            // normal vector at the intersection point
+            Vector N = P-C;
+            N.normalize();
+
+            if (sphereIntersected.isReflective()){
+                /* --- Reflecive surfaces ---
+                   Reflected direction is just incident direction with the normal direction reversed.
+                   (think of a ball hitting a wall) 
+                */
+                Ray reflectedRay(P+0.001*N, R.getDirection() - 2*dot(R.getDirection(),N)*N, R.getDepth()-1);
+                reflectedRay.normalize();
+                color = getColor(reflectedRay);
+            }else{
+                /* --- Diffuse surfaces ---
+                 Add a visiblity term, depending on position of the light and the intersection point.
+                 It creates shadows if light is not visible from intersection point.
+                */
+                Vector lightVector = getLightSource()-P;
+                double d2 = lightVector.norm2();
+                lightVector.normalize();
+
+                Ray PLight(P+0.001*N, lightVector);
+                // Add normal light if light source is visible from P
+                int i_min_shadow = intersect(PLight, t);
+                if (i_min_shadow == -1 || t*t > d2){
+                    color = (getLightIntensity()/(4*pow(PI,2)*d2))*std::max(0.,dot(N,lightVector))*sphereIntersected.getAlbedo();
+                }
+            }
+        }
+        return color;
+    }
+
     Sphere getObject(int index){
         return list_objects[index];
     }
@@ -190,7 +248,7 @@ private:
     double lightIntensity;
 };
 
- 
+
 int main() {
     int W = 512;
     int H = 512;
@@ -202,7 +260,7 @@ int main() {
     //light.normalize();
     
     Scene scene(Vector(-10, 20, 40), 1e8);
-    Sphere centralSphere(Vector(0., 0., 0.), 10, Vector(255.,255.,255.));
+    Sphere centralSphere(Vector(0., 0., 0.), 10, Vector(255.,255.,255.), true);
     Sphere leftSphere(Vector(0., 0., 1000.), 940, Vector(255., 0., 255.));
     Sphere rearSphere(Vector(0., -1000., 0.), 990, Vector(0., 0., 255.));
     Sphere rightSphere(Vector(0.,0.,-1000.), 940, Vector(0., 255., 0.));
@@ -215,43 +273,19 @@ int main() {
     scene.add(topSphere);
     
     std::vector<unsigned char> image(W*H*3, 0);
-    double t = 0.;
     for (int i = 0; i < H; i++) {
         for (int j = 0; j < W; j++) {
             // ray vector
             Ray R(camera, Vector(camera[0]+j-W/2+0.5, camera[1]+H/2-i-0.5, camera[2]-W/(2*tan(fov/2))));
             R.normalize();
 
-            int i_min = scene.intersect(R, t);
-            if (i_min >= 0){
-                // intersection point
-                Vector P = R.getOrigin() + t*R.getDirection();
-
-                // intersection object closest to camera
-                Sphere sphereIntersected = scene.getObject(i_min);
-                Vector C = sphereIntersected.getCenter();
-
-                // normal vector at the intersection point
-                Vector N = P-C;
-                N.normalize();
-
-                Vector omega = scene.getLightSource()-P;
-                double d2 = omega.norm2();
-                omega.normalize();
-                Ray PLight(P+0.001*N, omega);
-                Vector color(0., 0., 0.);
-                // Add normal light if light source is visible from P
-                int i_min_shadow = scene.intersect(PLight, t);
-                if (i_min_shadow == -1 || t*t > d2){
-                    color = (scene.getLightIntensity()/(4*pow(PI,2)*d2))*std::max(0.,dot(N,omega))*sphereIntersected.getAlbedo();
-                }
-                image[(i*W + j) * 3 + 0] = gammaCorrection(gamma, color[0]);
-                image[(i*W + j) * 3 + 1] = gammaCorrection(gamma, color[1]);
-                image[(i*W + j) * 3 + 2] = gammaCorrection(gamma, color[2]);
-            }
+            Vector color = scene.getColor(R);
+            image[(i*W + j) * 3 + 0] = gammaCorrection(gamma, color[0]);
+            image[(i*W + j) * 3 + 1] = gammaCorrection(gamma, color[1]);
+            image[(i*W + j) * 3 + 2] = gammaCorrection(gamma, color[2]);    
         }
     }
-    stbi_write_png("image_v2.png", W, H, 3, &image[0], 0);
+    stbi_write_png("image_v3_reflection.png", W, H, 3, &image[0], 0);
  
     return 0;
 }
