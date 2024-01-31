@@ -97,13 +97,14 @@ private:
 
 class Sphere{
 public:
-    explicit Sphere(Vector center, double radius, Vector color, bool r=false){
+    explicit Sphere(Vector center, double radius, Vector color, bool reflection=false, bool refraction=false, float refraction_index=1.){
         C = center; 
         R = radius;
         albedo = color;
-        reflective = r;
+        reflective = reflection;
+        refractive = refraction;
+        n = refraction_index;
     }
-
 
     bool intersect(const Ray& ray, double& t){
         /*
@@ -148,19 +149,31 @@ public:
         return reflective;
     }
 
+    bool isRefractive(){
+        return refractive;
+    }
+
+    float getN(){
+        return n;
+    }
+
+
 private:
     Vector C; 
     double R;
     Vector albedo;
     bool reflective;
+    bool refractive;
+    float n;
 };
 
 class Scene{
 public:
-    Scene(Vector source, double I){
+    Scene(Vector source, double I, float refraction_index = 1.0){
         lightSource = source;
         lightIntensity = I;
         list_objects = {};
+        n = refraction_index;
     }
 
     int intersect(const Ray& ray, double& t){
@@ -179,10 +192,8 @@ public:
     }
 
     Vector getColor(const Ray& R){
-        Vector color(0., 0., 255.);
-        if (R.getDepth() < 0){
-            return Vector(1000000.,0.,0.);
-        }
+        Vector color(0., 0., 0.);
+        if (R.getDepth() < 0){return color;}
 
         double t = 0.;
         int i_min = intersect(R, t);
@@ -198,14 +209,48 @@ public:
             Vector N = P-C;
             N.normalize();
 
+            float offset = 0.001;
+
             if (sphereIntersected.isReflective()){
-                /* --- Reflecive surfaces ---
+                /* --- Reflective surfaces ---
                    Reflected direction is just incident direction with the normal direction reversed.
                    (think of a ball hitting a wall) 
                 */
-                Ray reflectedRay(P+0.001*N, R.getDirection() - 2*dot(R.getDirection(),N)*N, R.getDepth()-1);
+                Ray reflectedRay(P+offset*N, R.getDirection() - 2*dot(R.getDirection(),N)*N, R.getDepth()-1);
                 reflectedRay.normalize();
                 color = getColor(reflectedRay);
+            }else if(sphereIntersected.isRefractive()){
+                /* --- Refractive surfaces ---
+                */
+                float n1, n2;
+                bool exiting =  dot(R.getDirection(), N) > 0;
+                offset *= -1;
+                if (exiting){
+                    N = (-1)*N;
+                    n1 = sphereIntersected.getN();
+                    n2 = n;
+                } 
+                else{
+                    n2 = sphereIntersected.getN();
+                    n1 = n;
+                }
+                
+                float R_normal_scalar = 1-pow((n1/n2),2)*(1-pow(dot(R.getDirection(), N),2));
+                // Check if total reflection occurs
+                // If that's the case, black color is returned
+                if (R_normal_scalar < 0){
+                    color = Vector(0.,0.,0.);
+                }
+                else{
+                    // Check if Ray is entering or exiting the object, and change offset / normal direction accordingly
+                    Vector R_normal = -sqrt(R_normal_scalar)*N;
+                    Vector R_tangential = (n1/n2)*(R.getDirection()-dot(R.getDirection(),N)*N); 
+                    Ray refractedRay(P+offset*N, R_normal+R_tangential, R.getDepth()-1);
+                    // New direction is R_normal+R_tangential and is already normalized
+                    // It can be seens by computing the equation for the norm of refractedRay.
+                    refractedRay.normalize();
+                    color = getColor(refractedRay);
+                }
             }else{
                 /* --- Diffuse surfaces ---
                  Add a visiblity term, depending on position of the light and the intersection point.
@@ -215,7 +260,7 @@ public:
                 double d2 = lightVector.norm2();
                 lightVector.normalize();
 
-                Ray PLight(P+0.001*N, lightVector);
+                Ray PLight(P+offset*N, lightVector);
                 // Add normal light if light source is visible from P
                 int i_min_shadow = intersect(PLight, t);
                 if (i_min_shadow == -1 || t*t > d2){
@@ -246,6 +291,7 @@ private:
     std::vector<Sphere> list_objects; 
     Vector lightSource;
     double lightIntensity;
+    float n;
 };
 
 
@@ -260,13 +306,17 @@ int main() {
     //light.normalize();
     
     Scene scene(Vector(-10, 20, 40), 1e8);
-    Sphere centralSphere(Vector(0., 0., 0.), 10, Vector(255.,255.,255.), true);
+    Sphere centralSphere(Vector(0., 0., 0.), 10, Vector(255.,255.,255.), false, true, 1.5);
+    Sphere centralSphereLeft(Vector(22., 0., 0.), 10, Vector(255.,255.,255.), false, false, 1.5);
+    Sphere centralSphereRight(Vector(-22., 0., 0.), 10, Vector(255.,255.,255.), true, false, 1.5);
     Sphere leftSphere(Vector(0., 0., 1000.), 940, Vector(255., 0., 255.));
     Sphere rearSphere(Vector(0., -1000., 0.), 990, Vector(0., 0., 255.));
     Sphere rightSphere(Vector(0.,0.,-1000.), 940, Vector(0., 255., 0.));
     Sphere topSphere(Vector(0., 1000., 0.), 940, Vector(255., 0., 0.));
 
     scene.add(centralSphere);
+    scene.add(centralSphereLeft);
+    scene.add(centralSphereRight);
     scene.add(leftSphere);
     scene.add(rearSphere);
     scene.add(rightSphere);
@@ -285,7 +335,7 @@ int main() {
             image[(i*W + j) * 3 + 2] = gammaCorrection(gamma, color[2]);    
         }
     }
-    stbi_write_png("image_v3_reflection.png", W, H, 3, &image[0], 0);
+    stbi_write_png("image_v4_refraction.png", W, H, 3, &image[0], 0);
  
     return 0;
 }
