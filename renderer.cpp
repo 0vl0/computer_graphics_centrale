@@ -97,7 +97,7 @@ private:
 
 class Sphere{
 public:
-    explicit Sphere(Vector center, double radius, Vector color, bool reflection=false, bool refraction=false, float refraction_index=1.){
+    explicit Sphere(Vector center, double radius, Vector color, bool reflection=false, bool refraction=false, float refraction_index=1){
         C = center; 
         R = radius;
         albedo = color;
@@ -169,11 +169,12 @@ private:
 
 class Scene{
 public:
-    Scene(Vector source, double I, float refraction_index = 1.0){
+    Scene(Vector source, double I, float refraction_index = 1.0, int path_per_pixel = 1000){
         lightSource = source;
         lightIntensity = I;
         list_objects = {};
         n = refraction_index;
+        rayPerPixel = path_per_pixel;
     }
 
     int intersect(const Ray& ray, double& t){
@@ -221,7 +222,12 @@ public:
                 color = getColor(reflectedRay);
             }else if(sphereIntersected.isRefractive()){
                 /* --- Refractive surfaces ---
+                Fresnel law is used to compute the refraction R and transmission T coefficient.
+                Instead of computing both the reflected and transmitted light for each ray, a random number
+                is chosen and only one ray is sent.
+                We get the same resulting light by averaging the rays.
                 */
+
                 float n1, n2;
                 bool exiting =  dot(R.getDirection(), N) > 0;
                 offset *= -1;
@@ -235,22 +241,36 @@ public:
                     n1 = n;
                 }
                 
-                float R_normal_scalar = 1-pow((n1/n2),2)*(1-pow(dot(R.getDirection(), N),2));
-                // Check if total reflection occurs
-                // If that's the case, black color is returned
-                if (R_normal_scalar < 0){
-                    color = Vector(0.,0.,0.);
+                double k0 = pow((n1-n2),2)/pow((n1+n2),2);
+                double reflection_coef = k0 + (1-k0)*pow((1-abs(dot(N,R.getDirection()))),5); 
+                double rnd_number = rand() / double(RAND_MAX);
+                //rnd_number = 0;
+                if (rnd_number < reflection_coef){
+                    // reflection
+                    Ray reflectedRay(P-offset*N, R.getDirection() - 2*dot(R.getDirection(),N)*N, R.getDepth()-1);
+                    reflectedRay.normalize();
+                    color = getColor(reflectedRay);     
                 }
                 else{
-                    // Check if Ray is entering or exiting the object, and change offset / normal direction accordingly
-                    Vector R_normal = -sqrt(R_normal_scalar)*N;
-                    Vector R_tangential = (n1/n2)*(R.getDirection()-dot(R.getDirection(),N)*N); 
-                    Ray refractedRay(P+offset*N, R_normal+R_tangential, R.getDepth()-1);
-                    // New direction is R_normal+R_tangential and is already normalized
-                    // It can be seens by computing the equation for the norm of refractedRay.
-                    refractedRay.normalize();
-                    color = getColor(refractedRay);
+                    // refraction 
+                    float R_normal_scalar = 1-pow((n1/n2),2)*(1-pow(dot(R.getDirection(), N),2));
+                    // Check if total reflection occurs
+                    // If that's the case, black color is returned
+                    if (R_normal_scalar < 0){
+                        color = Vector(0.,0.,0.);
+                    }
+                    else{
+                        // Check if Ray is entering or exiting the object, and change offset / normal direction accordingly
+                        Vector R_normal = -sqrt(R_normal_scalar)*N;
+                        Vector R_tangential = (n1/n2)*(R.getDirection()-dot(R.getDirection(),N)*N); 
+                        Ray refractedRay(P+offset*N, R_normal+R_tangential, R.getDepth()-1);
+                        // New direction is R_normal+R_tangential and is already normalized
+                        // It can be seens by computing the equation for the norm of refractedRay.
+                        refractedRay.normalize();
+                        color = getColor(refractedRay);
+                    }
                 }
+                
             }else{
                 /* --- Diffuse surfaces ---
                  Add a visiblity term, depending on position of the light and the intersection point.
@@ -287,11 +307,16 @@ public:
         return lightIntensity;
     }
 
+    int getRayPerPixel(){
+        return rayPerPixel;
+    }
+
 private:
     std::vector<Sphere> list_objects; 
     Vector lightSource;
     double lightIntensity;
     float n;
+    int rayPerPixel;
 };
 
 
@@ -303,7 +328,6 @@ int main() {
     // horizontal field of view
     const double fov = 60*(PI/180);
     const Vector camera(0,0,55);
-    //light.normalize();
     
     Scene scene(Vector(-10, 20, 40), 1e8);
     Sphere centralSphere(Vector(0., 0., 0.), 10, Vector(255.,255.,255.), false, true, 1.5);
@@ -329,13 +353,32 @@ int main() {
             Ray R(camera, Vector(camera[0]+j-W/2+0.5, camera[1]+H/2-i-0.5, camera[2]-W/(2*tan(fov/2))));
             R.normalize();
 
-            Vector color = scene.getColor(R);
-            image[(i*W + j) * 3 + 0] = gammaCorrection(gamma, color[0]);
-            image[(i*W + j) * 3 + 1] = gammaCorrection(gamma, color[1]);
-            image[(i*W + j) * 3 + 2] = gammaCorrection(gamma, color[2]);    
+            double red = 0; 
+            double green = 0;
+            double blue = 0;
+            #pragma omp parallel for num_threads(6) 
+            for (int k=0; k<scene.getRayPerPixel(); k++){
+                Vector color = scene.getColor(R);
+                //red += gammaCorrection(gamma, color[0]);
+                //green += gammaCorrection(gamma, color[1]);
+                //blue += gammaCorrection(gamma, color[2]); 
+                red += color[0];
+                green += color[1];
+                blue += color[2];
+            }
+            //red /= scene.getRayPerPixel();
+            //green /= scene.getRayPerPixel();
+            //blue /= scene.getRayPerPixel();
+            red = gammaCorrection(gamma, (red/scene.getRayPerPixel()));
+            green = gammaCorrection(gamma, (green/scene.getRayPerPixel()));
+            blue = gammaCorrection(gamma, (blue/scene.getRayPerPixel()));
+
+            image[(i*W + j) * 3 + 0] = red;
+            image[(i*W + j) * 3 + 1] = green;
+            image[(i*W + j) * 3 + 2] = blue;
         }
     }
-    stbi_write_png("image_v4_refraction.png", W, H, 3, &image[0], 0);
+    stbi_write_png("image_v5_fresnel.png", W, H, 3, &image[0], 0);
  
     return 0;
 }
