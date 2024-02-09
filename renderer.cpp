@@ -8,6 +8,7 @@
 #include "stb_image.h"
 
 #include <limits>
+#include <algorithm>
 
 const double PI = 3.1415926535897932; 
  
@@ -40,6 +41,14 @@ public:
         coords[2] /= n2;
     }
 
+    int argmin() {
+        int minIndex = 0;
+        int minValue = abs(coords[0]);
+        if (abs(coords[1]) < minValue){minIndex = 1;} 
+        if (abs(coords[2]) < minValue){minIndex = 2;} 
+        return minIndex;
+    }
+
     const double& operator[](int i) const {return coords[i];}
     double& operator[](int i) {return coords[i];}
 
@@ -55,9 +64,19 @@ Vector operator-(const Vector& a, const Vector& b){
     return Vector(a[0]-b[0], a[1]-b[1], a[2]-b[2]);
 }
 
+// vectorial product
+Vector cross(const Vector& a, const Vector& b){
+    return Vector(a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]);
+}
+
 Vector operator*(const double x, const Vector& a){
     return Vector(x*a[0], x*a[1], x*a[2]);
 }
+
+Vector operator*(const Vector& a, const Vector& b){
+    return Vector(a[0]*b[0], a[1]*b[1], a[2]*b[2]);
+}
+
 
 double dot(const Vector& a, const Vector& b){
     return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
@@ -67,6 +86,9 @@ double gammaCorrection(const double gamma, const double x){
     return std::min(255., pow(x, 1/gamma));
 }
 
+double getRandom(float maxi){
+     return maxi*rand()/RAND_MAX;
+}
 
 class Ray{
 public:
@@ -97,7 +119,7 @@ private:
 
 class Sphere{
 public:
-    explicit Sphere(Vector center, double radius, Vector color, bool reflection=false, bool refraction=false, float refraction_index=1){
+    explicit Sphere(Vector center, double radius, Vector color, bool reflection=false, bool refraction=false, float refraction_index=1, bool source=false){
         C = center; 
         R = radius;
         albedo = color;
@@ -157,6 +179,10 @@ public:
         return n;
     }
 
+    bool isLightSource(){
+        return light_source;
+    }
+
 
 private:
     Vector C; 
@@ -165,11 +191,12 @@ private:
     bool reflective;
     bool refractive;
     float n;
+    bool light_source;
 };
 
 class Scene{
 public:
-    Scene(Vector source, double I, float refraction_index = 1.0, int path_per_pixel = 1000){
+    Scene(Vector source, double I, float refraction_index = 1.0, int path_per_pixel = 1024){
         lightSource = source;
         lightIntensity = I;
         list_objects = {};
@@ -276,6 +303,7 @@ public:
                  Add a visiblity term, depending on position of the light and the intersection point.
                  It creates shadows if light is not visible from intersection point.
                 */
+               // Direct contribution
                 Vector lightVector = getLightSource()-P;
                 double d2 = lightVector.norm2();
                 lightVector.normalize();
@@ -286,6 +314,35 @@ public:
                 if (i_min_shadow == -1 || t*t > d2){
                     color = (getLightIntensity()/(4*pow(PI,2)*d2))*std::max(0.,dot(N,lightVector))*sphereIntersected.getAlbedo();
                 }
+                
+                // indirect contribution
+                // albedo*getColor(direction=omega_i)
+                // omega_i: loi en omega/pi
+                // return sum of both colors
+                double r1 = getRandom(1);
+                double r2 = getRandom(1);
+
+                float x = cos(2*PI*r1)*sqrt(1-r2);
+                float y = sin(2*PI*r1)*sqrt(1-r2);
+                float z = sqrt(r2);
+
+                int minIndex = N.argmin();
+                Vector T1, T2;
+                if (minIndex == 0){
+                    T1 = Vector(0, -N[2], N[1]);
+                }
+                else if (minIndex == 1){
+                    T1 = Vector(N[2], 0, -N[0]);
+                }
+                else if (minIndex == 2){
+                    T1 = Vector(-N[1], N[0], 0);
+                }
+                T1.normalize();
+                T2 = cross(N,T1);
+                Vector omegaIndirect = z*N + x*T1 + y*T2;
+                Ray indirectRay = Ray(P+offset*N, omegaIndirect, R.getDepth()-1);
+                Vector colorIndirect = sphereIntersected.getAlbedo()*getColor(indirectRay);
+                color = color + colorIndirect;
             }
         }
         return color;
@@ -329,15 +386,17 @@ int main() {
     const double fov = 60*(PI/180);
     const Vector camera(0,0,55);
     
-    Scene scene(Vector(-10, 20, 40), 1e8);
-    Sphere centralSphere(Vector(0., 0., 0.), 10, Vector(255.,255.,255.), false, true, 1.5);
-    Sphere centralSphereLeft(Vector(22., 0., 0.), 10, Vector(255.,255.,255.), false, false, 1.5);
-    Sphere centralSphereRight(Vector(-22., 0., 0.), 10, Vector(255.,255.,255.), true, false, 1.5);
-    Sphere leftSphere(Vector(0., 0., 1000.), 940, Vector(255., 0., 255.));
-    Sphere rearSphere(Vector(0., -1000., 0.), 990, Vector(0., 0., 255.));
-    Sphere rightSphere(Vector(0.,0.,-1000.), 940, Vector(0., 255., 0.));
-    Sphere topSphere(Vector(0., 1000., 0.), 940, Vector(255., 0., 0.));
+    Scene scene(Vector(-10, 20, 40), 1e10);
+    Sphere lightSource(Vector(-10, 20, 40), 7, Vector(0.,0.,0.), false, false, false, true);
+    Sphere centralSphere(Vector(0., 0., 0.), 10, Vector(1.,1.,1.), false, true, 1.5);
+    Sphere centralSphereLeft(Vector(22., 0., 0.), 10, Vector(1.,1.,1.), false, false, 1.5);
+    Sphere centralSphereRight(Vector(-22., 0., 0.), 10, Vector(1.,1.,1.), true, false, 1.5);
+    Sphere leftSphere(Vector(0., 0., 1000.), 940, Vector(1., 0., 1.));
+    Sphere rearSphere(Vector(0., -1000., 0.), 990, Vector(0., 0., 1.));
+    Sphere rightSphere(Vector(0.,0.,-1000.), 940, Vector(0., 1., 0.));
+    Sphere topSphere(Vector(0., 1000., 0.), 940, Vector(1., 0., 0.));
 
+    scene.add(lightSource);
     scene.add(centralSphere);
     scene.add(centralSphereLeft);
     scene.add(centralSphereRight);
@@ -347,28 +406,29 @@ int main() {
     scene.add(topSphere);
     
     std::vector<unsigned char> image(W*H*3, 0);
+    #pragma omp parallel for schedule(dynamic, 1)
     for (int i = 0; i < H; i++) {
         for (int j = 0; j < W; j++) {
             // ray vector
-            Ray R(camera, Vector(camera[0]+j-W/2+0.5, camera[1]+H/2-i-0.5, camera[2]-W/(2*tan(fov/2))));
-            R.normalize();
 
             double red = 0; 
             double green = 0;
             double blue = 0;
-            #pragma omp parallel for num_threads(6) 
+            #pragma omp parallel for num_threads(6)
             for (int k=0; k<scene.getRayPerPixel(); k++){
+                //anti aliasing
+                double r1 = getRandom(1);
+                double r2 = getRandom(1);
+                double g1 = log(-2*log(r1))*cos(2*PI*r2)*0.25;
+                double g2 = log(-2*log(r1))*sin(2*PI*r2)*0.25;
+                Ray R(camera, Vector(camera[0]+j-W/2+0.5+g1, camera[1]+H/2-i-0.5+g2, camera[2]-W/(2*tan(fov/2))));
+                R.normalize();
+
                 Vector color = scene.getColor(R);
-                //red += gammaCorrection(gamma, color[0]);
-                //green += gammaCorrection(gamma, color[1]);
-                //blue += gammaCorrection(gamma, color[2]); 
                 red += color[0];
                 green += color[1];
                 blue += color[2];
             }
-            //red /= scene.getRayPerPixel();
-            //green /= scene.getRayPerPixel();
-            //blue /= scene.getRayPerPixel();
             red = gammaCorrection(gamma, (red/scene.getRayPerPixel()));
             green = gammaCorrection(gamma, (green/scene.getRayPerPixel()));
             blue = gammaCorrection(gamma, (blue/scene.getRayPerPixel()));
@@ -378,7 +438,7 @@ int main() {
             image[(i*W + j) * 3 + 2] = blue;
         }
     }
-    stbi_write_png("image_v5_fresnel.png", W, H, 3, &image[0], 0);
+    stbi_write_png("image_v8_soft_shadow.png", W, H, 3, &image[0], 0);
  
     return 0;
 }
