@@ -39,6 +39,13 @@ public:
         return *this;
     }
 
+    Vector operator/=(const double x){
+        coords[0] /= x;
+        coords[1] /= x;
+        coords[2] /= x;
+        return *this;
+    }
+
     double norm2(){
         /*
         Return ||v||_2^2, since ||v||_2 is rarely used in the code compared to the power of two of the norm.
@@ -274,6 +281,26 @@ Vector M;
 
 };
 
+// BVH node
+class Node{
+public:
+    Node* left;
+    Node* right;
+    BoundingBox bbox;
+    int start;
+    int end;
+
+    Node(Node* l, Node* r, BoundingBox box, int index_start, int index_end){
+        left = l;
+        right = r;
+        bbox = box;
+        start = index_start;
+        end = index_end;
+    }
+
+    Node(){}
+};
+
 class TriangleIndices {
 public:
     TriangleIndices(int vtxi = -1, int vtxj = -1, int vtxk = -1, int ni = -1, int nj = -1, int nk = -1, int uvi = -1, int uvj = -1, int uvk = -1, int group = -1, bool added = false) : vtxi(vtxi), vtxj(vtxj), vtxk(vtxk), uvi(uvi), uvj(uvj), uvk(uvk), ni(ni), nj(nj), nk(nk), group(group) {
@@ -283,6 +310,134 @@ public:
     int ni, nj, nk;  // indices within the normals array
     int group;       // face group
 };
+
+class BVH{
+public:
+Node* root;
+std::vector<Vector> vector_vertices; // vertices
+std::vector<int> vector_indices; // sorted indices
+std::vector<TriangleIndices> vector_indices_triangles; // triangles
+
+    BVH(std::vector<Vector> v_vertices){
+        vector_vertices = v_vertices;
+        Node* root = new Node();
+        for (int i = 0; i<vector_vertices.size(); i++){
+            vector_indices.push_back(i); 
+        }
+    }
+
+    BVH(){}
+
+    int get_index(int i){
+        return vector_indices[i];
+    }
+
+    void init(std::vector<Vector> v_vertices, std::vector<TriangleIndices> indices){
+        vector_vertices = v_vertices;
+        vector_indices_triangles = indices;
+        Node* root = new Node();
+        for (int i = 0; i<vector_indices_triangles.size(); i++){
+            vector_indices.push_back(i); 
+        }
+    }
+
+    Vector get_barycenter(int start, int end){
+        Vector barycenter(0., 0., 0.);
+        for (int i=start; i<end; i++){
+            barycenter += compute_barycenter(i);
+            // vector_vertices[vector_indices[i]];
+        }
+        barycenter /= (end-start+1);
+        return barycenter;
+    }
+
+    void construct(int start, int end){
+        root = construct_bvh(start, end);
+    }
+
+    Vector compute_barycenter(int index_triangle){
+        // compute barycenter of index_triangle-th triangle
+        TriangleIndices indices_triangle_i = vector_indices_triangles[index_triangle];
+        Vector b(0., 0., 0.);
+        int index_1 = indices_triangle_i.vtxi;
+        int index_2 = indices_triangle_i.vtxj;
+        int index_3 = indices_triangle_i.vtxk;
+
+        b += vector_vertices[index_1];
+        b += vector_vertices[index_2];
+        b += vector_vertices[index_3];
+
+        b /= 3.0;
+
+        return b;
+    }
+
+    Node* construct_bvh(int start, int end){
+        // construct the BVH tree.
+        // Vector barycenter = get_barycenter(start, end);
+        BoundingBox bbox = compute_bbox(start, end);
+        // stop if there are less than 5 triangles in the bounding box
+        Node* node = new Node(NULL, NULL, bbox, start, end);
+
+        Vector size_bbox = bbox.M-bbox.m;
+        int dimension_to_split = 0;
+        if (size_bbox[1] > size_bbox[0] && size_bbox[1] > size_bbox[2]){
+            dimension_to_split = 1;
+        } 
+        if (size_bbox[2] > size_bbox[0] && size_bbox[2] > size_bbox[1]){
+            dimension_to_split = 2;
+        } 
+        double threshold = bbox.m[dimension_to_split] + size_bbox[dimension_to_split]/2;
+
+        int index_pivot = start;
+        for (int i = start; i<end; i++){
+            if (compute_barycenter(vector_indices[i])[dimension_to_split] < threshold){
+                std::swap(vector_indices[i], vector_indices[index_pivot]);
+                index_pivot += 1;
+            }
+        }
+        
+        if (end-start+1 <= 3 || index_pivot <= start || index_pivot >= end){
+            return node;
+        }
+        node->left = construct_bvh(start, index_pivot-1); // index_pivot excluded
+        node->right = construct_bvh(index_pivot, end); // end+1 excluded
+
+        return node;
+    }
+
+    BoundingBox compute_bbox(int index_triangle_start, int index_triangle_end){
+        BoundingBox bbox;
+        bbox.m = Vector(1E9, 1E9, 1E9);
+        bbox.M = Vector(-1E9, -1E9, -1E9);
+
+        // for(int i = index_triangle_start; i<index_triangle_end; i++){
+        //    for(int j = 0; j<3; j++){
+        //     bbox.m[j] = std::min(bbox.m[j], vector_vertices[vector_indices[i]][j]);
+        //     bbox.M[j] = std::max(bbox.M[j], vector_vertices[vector_indices[i]][j]);
+        //    } 
+        // }
+        for(int i = index_triangle_start; i<index_triangle_end+1; i++){
+            TriangleIndices indices_triangle_i = vector_indices_triangles[vector_indices[i]];
+            int index_1 = indices_triangle_i.vtxi;
+            int index_2 = indices_triangle_i.vtxj;
+            int index_3 = indices_triangle_i.vtxk;
+                
+            for(int j = 0; j<3; j++){
+                bbox.m[j] = std::min(bbox.m[j], vector_vertices[index_1][j]);
+                bbox.m[j] = std::min(bbox.m[j], vector_vertices[index_2][j]);
+                bbox.m[j] = std::min(bbox.m[j], vector_vertices[index_3][j]);
+
+                bbox.M[j] = std::max(bbox.M[j], vector_vertices[index_1][j]);
+                bbox.M[j] = std::max(bbox.M[j], vector_vertices[index_2][j]);
+                bbox.M[j] = std::max(bbox.M[j], vector_vertices[index_3][j]);
+            } 
+        }
+
+        return bbox;
+    }
+
+};
  
  
 class TriangleMesh : public Geometry{
@@ -290,6 +445,7 @@ public:
   ~TriangleMesh() {}
   TriangleMesh(Vector color, bool reflection=false, bool refraction=false, float refraction_index=1, bool light=false) : Geometry(color, reflection, refraction, refraction_index, light){
     bbox = BoundingBox();
+    bvh = BVH();
   };
     
     void readOBJ(const char* obj) {
@@ -466,35 +622,35 @@ public:
         // init_bounding_box();
     }
  
-    bool intersect(const Ray& ray, double& t, Vector& N, Vector& P){
-        t = 1E19;
-        if (bbox.intersect(ray)){
-            for(int i =0; i<indices.size(); i++){
-                TriangleIndices indices_triangle_i = indices[i];
-                int index_1 = indices_triangle_i.vtxi;
-                int index_2 = indices_triangle_i.vtxj;
-                int index_3 = indices_triangle_i.vtxk;
+    // bool intersect(const Ray& ray, double& t, Vector& N, Vector& P){
+    //     t = 1E19;
+    //     if (bbox.intersect(ray)){
+    //         for(int i =0; i<indices.size(); i++){
+    //             TriangleIndices indices_triangle_i = indices[i];
+    //             int index_1 = indices_triangle_i.vtxi;
+    //             int index_2 = indices_triangle_i.vtxj;
+    //             int index_3 = indices_triangle_i.vtxk;
 
-                Vector A = vertices[index_1];
-                Vector B = vertices[index_2];
-                Vector C = vertices[index_3];
-                Vector e1 = B-A;
-                Vector e2 = C-A;
-                N = cross(e1, e2);
+    //             Vector A = vertices[index_1];
+    //             Vector B = vertices[index_2];
+    //             Vector C = vertices[index_3];
+    //             Vector e1 = B-A;
+    //             Vector e2 = C-A;
+    //             N = cross(e1, e2);
 
-                Vector u = ray.getDirection();
-                Vector O = ray.getOrigin();
+    //             Vector u = ray.getDirection();
+    //             Vector O = ray.getOrigin();
 
-                double beta = dot(e2, cross(A-O, u))/dot(u, N);
-                double gamma = -dot(e1, cross(A-O, u))/dot(u, N);
-                double alpha = 1-beta-gamma;
-                t = dot(A-O, N)/dot(u,N);
-                P = A + beta*e1 + gamma*e2;
-                if (t >= 0 && beta >= 0 && gamma >= 0 && alpha >= 0 && beta <= 1 && gamma <= 1 && alpha <= 1){return true;}
-            }
-        }
-        return false;
-    }
+    //             double beta = dot(e2, cross(A-O, u))/dot(u, N);
+    //             double gamma = -dot(e1, cross(A-O, u))/dot(u, N);
+    //             double alpha = 1-beta-gamma;
+    //             t = dot(A-O, N)/dot(u,N);
+    //             P = A + beta*e1 + gamma*e2;
+    //             if (t >= 0 && beta >= 0 && gamma >= 0 && alpha >= 0 && beta <= 1 && gamma <= 1 && alpha <= 1){return true;}
+    //         }
+    //     }
+    //     return false;
+    // }
 
     void init_bounding_box(){
         bbox.m = Vector(1E9, 1E9, 1E9);
@@ -513,7 +669,73 @@ public:
             vertices[i] += translation_vector;
             vertices[i] *= scale_factor;
         }
-        init_bounding_box();
+        // init_bounding_box();
+        bvh.init(vertices, indices);
+        // int a = indices.size();
+        bvh.construct(0, indices.size()-1);
+    }
+
+    bool intersect(const Ray& ray, double& t, Vector& N, Vector& P){
+        std::vector<Node*> list_nodes;
+        list_nodes.push_back(bvh.root);
+        bool intersection = false;
+        Vector N_min(0., 0., 0.);
+        Vector P_min(0., 0., 0.);
+        double t_min = 1E19;
+        t = 1E19;
+        while (!list_nodes.empty()){
+            Node* node = list_nodes.back();
+            list_nodes.pop_back();
+            if (node->right != nullptr){
+                if (node->right->bbox.intersect(ray)){
+                    list_nodes.push_back(node->right);
+                }
+            }
+            if (node->left != nullptr){
+                if (node->left->bbox.intersect(ray)){
+                    list_nodes.push_back(node->left);
+                }
+            }
+            // check intersection with ray
+            // leaf, excluding node.left in leaves
+            if (node->right == nullptr && node->left == nullptr){
+                // bbox = node.bbox;
+                for(int i = node->start; i<node->end+1; i++){
+                    TriangleIndices indices_triangle_i = indices[bvh.get_index(i)];
+                    int index_1 = indices_triangle_i.vtxi;
+                    int index_2 = indices_triangle_i.vtxj;
+                    int index_3 = indices_triangle_i.vtxk;
+
+                    Vector A = vertices[index_1];
+                    Vector B = vertices[index_2];
+                    Vector C = vertices[index_3];
+                    Vector e1 = B-A;
+                    Vector e2 = C-A;
+                    N = cross(e1, e2);
+
+                    Vector u = ray.getDirection();
+                    Vector O = ray.getOrigin();
+
+                    double beta = dot(e2, cross(A-O, u))/dot(u, N);
+                    double gamma = -dot(e1, cross(A-O, u))/dot(u, N);
+                    double alpha = 1-beta-gamma;
+                    t = dot(A-O, N)/dot(u,N);
+                    P = A + beta*e1 + gamma*e2;
+                    if (t >= 0 && beta >= 0 && gamma >= 0 && alpha >= 0 && beta <= 1 && gamma <= 1 && alpha <= 1){
+                        intersection = true;
+                        if (t < t_min){
+                            t_min = t;
+                            N_min = N;
+                            P_min = P;
+                        }
+                    }
+                }
+            }
+        }
+        N = N_min;
+        t = t_min;
+        P = P_min;
+        return intersection;
     }
 
     std::vector<TriangleIndices> indices;
@@ -523,7 +745,11 @@ public:
     std::vector<Vector> vertexcolors;
 
     BoundingBox bbox;
+
+    BVH bvh;
 };
+
+
 
 
 class Scene{
@@ -791,7 +1017,7 @@ int main() {
     int H = 512;
     const double gamma = 2.2;
 
-    TriangleMesh* m = new TriangleMesh(Vector(1., 0., 0.), true, false);
+    TriangleMesh* m = new TriangleMesh(Vector(1., 1., 1.), true, false);
     m->readOBJ("cadnav.com_model/Models_F0202A090/cat.obj");
     m->translation(Vector(0., -10., 0.), 0.6);
 
@@ -800,7 +1026,7 @@ int main() {
     const Vector camera(0,0,55);
     
     Scene scene(Vector(-10, 20, 40), 1e10);
-    Sphere* lightSource = new Sphere(Vector(-10, 25, 40), 5, Vector(1.,1.,1.), false, false, 1.5, true);
+    Sphere* lightSource = new Sphere(Vector(-10, 25, 40), 5, Vector(1.,1.,1.), true, false, 1.5, true);
     Sphere* centralSphere = new Sphere(Vector(0., 0., 0.), 10, Vector(1.,1.,1.), false, true, 1.5);
     Sphere* centralSphereLeft = new Sphere(Vector(22., 0., 0.), 10, Vector(1.,1.,1.), false, false, 1.5);
     Sphere* centralSphereRight = new Sphere(Vector(-22., 0., 0.), 10, Vector(1.,1.,1.), true, false, 1.5);
@@ -854,7 +1080,7 @@ int main() {
             image[(i*W + j) * 3 + 2] = blue;
         }
     }
-    stbi_write_png("test_cat_reflection.png", W, H, 3, &image[0], 0);
+    stbi_write_png("test_bvh_512.png", W, H, 3, &image[0], 0);
  
     return 0;
 }
