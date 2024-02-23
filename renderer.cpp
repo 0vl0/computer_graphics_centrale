@@ -706,6 +706,15 @@ public:
                     int index_2 = indices_triangle_i.vtxj;
                     int index_3 = indices_triangle_i.vtxk;
 
+                    int index_normal_1 = indices_triangle_i.ni;
+                    int index_normal_2 = indices_triangle_i.nj;
+                    int index_normal_3 = indices_triangle_i.nk;
+
+                    Vector N_A = normals[index_normal_1];
+                    Vector N_B = normals[index_normal_2];
+                    Vector N_C = normals[index_normal_3];
+
+
                     Vector A = vertices[index_1];
                     Vector B = vertices[index_2];
                     Vector C = vertices[index_3];
@@ -721,6 +730,11 @@ public:
                     double alpha = 1-beta-gamma;
                     t = dot(A-O, N)/dot(u,N);
                     P = A + beta*e1 + gamma*e2;
+
+                    Vector shading_normal = (alpha*N_A + beta*N_B + gamma*N_C);
+                    shading_normal.normalize();
+                    N = shading_normal;
+
                     if (t >= 0 && beta >= 0 && gamma >= 0 && alpha >= 0 && beta <= 1 && gamma <= 1 && alpha <= 1){
                         intersection = true;
                         if (t < t_min){
@@ -1013,13 +1027,13 @@ private:
 };
 
 int main() {
-    int W = 512;
-    int H = 512;
+    int W = 128;
+    int H = 128;
     const double gamma = 2.2;
 
-    TriangleMesh* m = new TriangleMesh(Vector(1., 1., 1.), true, false);
+    TriangleMesh* m = new TriangleMesh(Vector(1., 1., 1.), false, false);
     m->readOBJ("cadnav.com_model/Models_F0202A090/cat.obj");
-    m->translation(Vector(0., -10., 0.), 0.6);
+    m->translation(Vector(0., -30., 0.), 0.6);
 
     // horizontal field of view
     const double fov = 60*(PI/180);
@@ -1080,7 +1094,7 @@ int main() {
             image[(i*W + j) * 3 + 2] = blue;
         }
     }
-    stbi_write_png("test_bvh_512.png", W, H, 3, &image[0], 0);
+    stbi_write_png("test_shading_normal.png", W, H, 3, &image[0], 0);
  
     return 0;
 }
