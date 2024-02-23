@@ -32,6 +32,13 @@ public:
         return *this;
     }
 
+    Vector operator*=(const double x){
+        coords[0] *= x;
+        coords[1] *= x;
+        coords[2] *= x;
+        return *this;
+    }
+
     double norm2(){
         /*
         Return ||v||_2^2, since ||v||_2 is rarely used in the code compared to the power of two of the norm.
@@ -137,7 +144,7 @@ public:
         light = light_source;
     }
 
-    virtual bool intersect(const Ray& ray, double& t, Vector& N) = 0;
+    virtual bool intersect(const Ray& ray, double& t, Vector& N, Vector& P) = 0;
 
     bool isReflective(){
         return reflective;
@@ -176,7 +183,7 @@ public:
         R = radius;
     }
 
-    bool intersect(const Ray& ray, double& t, Vector& N){
+    bool intersect(const Ray& ray, double& t, Vector& N, Vector& P){
         /*
         Return true if the ray intersects the sphere.
         The parametric equation of the Ray is O(t) = O+tu.
@@ -205,7 +212,9 @@ public:
             t = t1;
         }
 
-        N = O+t*u-getCenter();
+        // intersection point
+        P = O+t*u;
+        N = P-getCenter();
         return true;
     }
 
@@ -454,10 +463,10 @@ public:
  
         }
         fclose(f);
-        init_bounding_box();
+        // init_bounding_box();
     }
  
-    bool intersect(const Ray& ray, double& t, Vector& N){
+    bool intersect(const Ray& ray, double& t, Vector& N, Vector& P){
         t = 1E19;
         if (bbox.intersect(ray)){
             for(int i =0; i<indices.size(); i++){
@@ -480,9 +489,9 @@ public:
                 double gamma = -dot(e1, cross(A-O, u))/dot(u, N);
                 double alpha = 1-beta-gamma;
                 t = dot(A-O, N)/dot(u,N);
-                if (beta >= 0 && gamma >= 0 && alpha >= 0){return true;}
+                P = A + beta*e1 + gamma*e2;
+                if (t >= 0 && beta >= 0 && gamma >= 0 && alpha >= 0 && beta <= 1 && gamma <= 1 && alpha <= 1){return true;}
             }
-            return false;
         }
         return false;
     }
@@ -499,11 +508,10 @@ public:
         }
     }
 
-    void translation(Vector translation_vector){
+    void translation(Vector translation_vector, double scale_factor){
         for(int i = 0; i<vertices.size(); i++){
-           for(int j = 0; j<3; j++){
-                vertices[i][j] += translation_vector[j];
-           } 
+            vertices[i] += translation_vector;
+            vertices[i] *= scale_factor;
         }
         init_bounding_box();
     }
@@ -529,21 +537,24 @@ public:
         index_light_sphere = index_light;
     }
 
-    int intersect(const Ray& ray, double& t, Vector& N){
+    int intersect(const Ray& ray, double& t, Vector& N, Vector &P){
         double t_min = std::numeric_limits<int>::max(); 
         int i_min = -1;
         Vector N_min(0., 0., 0.);
+        Vector P_min(0., 0., 0.);
         for (int i=0; i<list_objects.size(); i++){
-            if (list_objects[i]->intersect(ray, t, N)){
+            if (list_objects[i]->intersect(ray, t, N, P)){
                 if (t < t_min){
                     t_min = t;
                     i_min = i;
                     N_min = N;
+                    P_min = P;
                 }
             }
         }
         t = t_min;
         N = N_min;
+        P = P_min;
         return i_min;
     }
 
@@ -588,10 +599,11 @@ public:
 
         double t = 0.;
         Vector N(0., 0., 0.);
-        int i_min = intersect(R, t, N);
+        Vector P(0., 0., 0.);
+        int i_min = intersect(R, t, N, P);
         if (i_min >= 0){
             // intersection point
-            Vector P = R.getOrigin() + t*R.getDirection();
+            // Vector P = R.getOrigin() + t*R.getDirection();
 
             // intersection object closest to camera
             Geometry* sphereIntersected = getObject(i_min);
@@ -775,20 +787,20 @@ private:
 };
 
 int main() {
-    int W = 256;
-    int H = 256;
+    int W = 512;
+    int H = 512;
     const double gamma = 2.2;
 
-    TriangleMesh* m = new TriangleMesh(Vector(1., 1., 1.), true);
+    TriangleMesh* m = new TriangleMesh(Vector(1., 0., 0.), true, false);
     m->readOBJ("cadnav.com_model/Models_F0202A090/cat.obj");
-    m->translation(Vector(0., -10., 0.));
+    m->translation(Vector(0., -10., 0.), 0.6);
 
     // horizontal field of view
     const double fov = 60*(PI/180);
     const Vector camera(0,0,55);
     
     Scene scene(Vector(-10, 20, 40), 1e10);
-    Sphere* lightSource = new Sphere(Vector(10, 20, 40), 8, Vector(1.,1.,1.), false, false, 1.5, true);
+    Sphere* lightSource = new Sphere(Vector(-10, 25, 40), 5, Vector(1.,1.,1.), false, false, 1.5, true);
     Sphere* centralSphere = new Sphere(Vector(0., 0., 0.), 10, Vector(1.,1.,1.), false, true, 1.5);
     Sphere* centralSphereLeft = new Sphere(Vector(22., 0., 0.), 10, Vector(1.,1.,1.), false, false, 1.5);
     Sphere* centralSphereRight = new Sphere(Vector(-22., 0., 0.), 10, Vector(1.,1.,1.), true, false, 1.5);
@@ -842,7 +854,7 @@ int main() {
             image[(i*W + j) * 3 + 2] = blue;
         }
     }
-    stbi_write_png("test_cat.png", W, H, 3, &image[0], 0);
+    stbi_write_png("test_cat_reflection.png", W, H, 3, &image[0], 0);
  
     return 0;
 }
