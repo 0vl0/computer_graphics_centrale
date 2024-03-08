@@ -143,15 +143,20 @@ private:
 
 class Geometry {
 public:
-    Geometry(Vector color, bool reflection=false, bool refraction=false, float refraction_index=1, bool light_source=false){
+    Geometry(Vector color, bool reflection=false, bool refraction=false, float refraction_index=1, bool light_source=false, bool is_procedural=false){
         albedo = color;
         reflective = reflection;
         refractive = refraction;
         n = refraction_index;
         light = light_source;
+        procedural = is_procedural;
     }
 
-    virtual bool intersect(const Ray& ray, double& t, Vector& N, Vector& P) = 0;
+    virtual bool intersect(const Ray& ray, double& t, Vector& N, Vector& P, Vector& albedo_texture) = 0;
+
+    bool is_procedural(){
+        return procedural;
+    }
 
     bool isReflective(){
         return reflective;
@@ -179,18 +184,19 @@ private:
     bool refractive;
     float n;
     bool light;
+    bool procedural;
 };
 
 
 class Sphere : public Geometry  {
 public:
-    explicit Sphere(Vector center, double radius, Vector color, bool reflection=false, bool refraction=false, float refraction_index=1, bool source=false)
-    : Geometry(color, reflection, refraction, refraction_index, source){
+    explicit Sphere(Vector center, double radius, Vector color, bool reflection=false, bool refraction=false, float refraction_index=1, bool source=false, bool is_procedural=false)
+    : Geometry(color, reflection, refraction, refraction_index, source, is_procedural){
         C = center; 
         R = radius;
     }
 
-    bool intersect(const Ray& ray, double& t, Vector& N, Vector& P){
+    bool intersect(const Ray& ray, double& t, Vector& N, Vector& P, Vector& albedo_texture){
         /*
         Return true if the ray intersects the sphere.
         The parametric equation of the Ray is O(t) = O+tu.
@@ -222,6 +228,7 @@ public:
         // intersection point
         P = O+t*u;
         N = P-getCenter();
+        albedo_texture = getAlbedo();
         return true;
     }
 
@@ -306,9 +313,9 @@ public:
     TriangleIndices(int vtxi = -1, int vtxj = -1, int vtxk = -1, int ni = -1, int nj = -1, int nk = -1, int uvi = -1, int uvj = -1, int uvk = -1, int group = -1, bool added = false) : vtxi(vtxi), vtxj(vtxj), vtxk(vtxk), uvi(uvi), uvj(uvj), uvk(uvk), ni(ni), nj(nj), nk(nk), group(group) {
     };
     int vtxi, vtxj, vtxk; // indices within the vertex coordinates array
-    int uvi, uvj, uvk;  // indices within the uv coordinates array
+    int uvi, uvj, uvk;  // indices within the uv coordinates array -> coordinates UV
     int ni, nj, nk;  // indices within the normals array
-    int group;       // face group
+    int group;       // face group: triangles that belong to the same texture, for the cat: 0
 };
 
 class BVH{
@@ -446,7 +453,19 @@ public:
   TriangleMesh(Vector color, bool reflection=false, bool refraction=false, float refraction_index=1, bool light=false) : Geometry(color, reflection, refraction, refraction_index, light){
     bbox = BoundingBox();
     bvh = BVH();
-  };
+    load_texture("cadnav.com_model/Models_F0202A090/cat_diff.png");
+  }
+
+  std::vector<float*> vector_textures;
+  std::vector<int> vector_textures_W, vector_textures_H;
+
+
+  void load_texture(const char* file_name){
+    int x, y, c;
+    vector_textures.push_back(stbi_loadf(file_name, &x, &y, &c, 3));
+    vector_textures_W.push_back(x);
+    vector_textures_H.push_back(y);
+  }
     
     void readOBJ(const char* obj) {
  
@@ -675,7 +694,7 @@ public:
         bvh.construct(0, indices.size()-1);
     }
 
-    bool intersect(const Ray& ray, double& t, Vector& N, Vector& P){
+    bool intersect(const Ray& ray, double& t, Vector& N, Vector& P, Vector& albedo_texture){
         std::vector<Node*> list_nodes;
         list_nodes.push_back(bvh.root);
         bool intersection = false;
@@ -683,6 +702,8 @@ public:
         Vector P_min(0., 0., 0.);
         double t_min = 1E19;
         t = 1E19;
+        double best_i = 1E19;
+        double best_alpha, best_beta, best_gamma;
         while (!list_nodes.empty()){
             Node* node = list_nodes.back();
             list_nodes.pop_back();
@@ -741,6 +762,10 @@ public:
                             t_min = t;
                             N_min = N;
                             P_min = P;
+                            best_alpha = alpha;
+                            best_beta = beta; 
+                            best_gamma = gamma;
+                            best_i = bvh.get_index(i);
                         }
                     }
                 }
@@ -749,6 +774,27 @@ public:
         N = N_min;
         t = t_min;
         P = P_min;
+        if (intersection){
+            int group = indices[best_i].group;
+            if (vector_textures.size() == 0 || group >= vector_textures.size()){
+                albedo_texture = getAlbedo();
+            }else{
+                // coordinates u, v of P in [0,1]
+                Vector UV = best_alpha*uvs[indices[best_i].uvi] + best_beta*uvs[indices[best_i].uvj] + best_gamma*uvs[indices[best_i].uvk];
+                UV[0] = fabs(UV[0]); // positive
+                UV[0] = UV[0]-floor(UV[0]); // modulo 1
+                UV[1] = fabs(UV[1]); 
+                UV[1] = UV[1] - floor(UV[1]);
+                UV[1] = 1-UV[1]; // reverse to go from bottom to top
+                UV = UV * Vector(vector_textures_W[group], vector_textures_H[group], 0);
+                int u = std::min(vector_textures_W[group]-1, int(UV[0]));
+                int v = std::min(vector_textures_H[group]-1, int(UV[1]));
+                int index_pixel = v*vector_textures_W[group] + u;
+                // Vector a = vector_textures[group];
+                // float z = vector_textures[0][1000];
+                albedo_texture = Vector(vector_textures[group][index_pixel*3], vector_textures[group][index_pixel*3+1], vector_textures[group][index_pixel*3+2]);
+            }
+        }
         return intersection;
     }
 
@@ -768,7 +814,7 @@ public:
 
 class Scene{
 public:
-    Scene(Vector source, double I, float refraction_index = 1.0, int path_per_pixel = 32, int index_light=0){
+    Scene(Vector source, double I, float refraction_index = 1.0, int path_per_pixel = 16, int index_light=0){
         lightSource = source;
         lightIntensity = I;
         list_objects = {};
@@ -777,24 +823,27 @@ public:
         index_light_sphere = index_light;
     }
 
-    int intersect(const Ray& ray, double& t, Vector& N, Vector &P){
+    int intersect(const Ray& ray, double& t, Vector& N, Vector &P, Vector& albedo_texture){
         double t_min = std::numeric_limits<int>::max(); 
         int i_min = -1;
         Vector N_min(0., 0., 0.);
         Vector P_min(0., 0., 0.);
+        Vector albedo_min(0., 0., 0.);
         for (int i=0; i<list_objects.size(); i++){
-            if (list_objects[i]->intersect(ray, t, N, P)){
+            if (list_objects[i]->intersect(ray, t, N, P, albedo_texture)){
                 if (t < t_min){
                     t_min = t;
                     i_min = i;
                     N_min = N;
                     P_min = P;
+                    albedo_min = albedo_texture;
                 }
             }
         }
         t = t_min;
         N = N_min;
         P = P_min;
+        albedo_texture = albedo_min;
         return i_min;
     }
 
@@ -840,7 +889,8 @@ public:
         double t = 0.;
         Vector N(0., 0., 0.);
         Vector P(0., 0., 0.);
-        int i_min = intersect(R, t, N, P);
+        Vector albedo_texture(0., 0., 0.);
+        int i_min = intersect(R, t, N, P, albedo_texture);
         if (i_min >= 0){
             // intersection point
             // Vector P = R.getOrigin() + t*R.getDirection();
@@ -855,6 +905,14 @@ public:
 
             float offset = 0.001;
 
+            if (sphereIntersected->is_procedural()){
+                if (int(abs(P[0])+abs(P[2]))%10 < 5){
+                    albedo_texture = Vector(1., 1., 1.);
+                }
+                else{
+                    albedo_texture = Vector(0., 0., 0.);
+                }
+            }
             if (sphereIntersected->isReflective()){
                 /* --- Reflective surfaces ---
                    Reflected direction is just incident direction with the normal direction reversed.
@@ -862,7 +920,8 @@ public:
                 */
                 Ray reflectedRay(P+offset*N, R.getDirection() - 2*dot(R.getDirection(),N)*N, R.getDepth()-1);
                 reflectedRay.normalize();
-                color = getColor(reflectedRay);
+                // color = getColor(reflectedRay);
+                color = albedo_texture;
             }else if(sphereIntersected->isRefractive()){
                 /* --- Refractive surfaces ---
                 Fresnel law is used to compute the refraction R and transmission T coefficient.
@@ -972,14 +1031,16 @@ public:
                     double dot1 = dot(N,omega_i);
                     double dot2 = dot(N_prime,(-1)*omega_i);
 
-                    color =  L_wi*((std::max(0., dot(N,omega_i))*std::max(0., dot(N_prime,(-1)*omega_i)))/(d2*densite_proba))*sphereIntersected->getAlbedo();
+                    // color =  L_wi*((std::max(0., dot(N,omega_i))*std::max(0., dot(N_prime,(-1)*omega_i)))/(d2*densite_proba))*sphereIntersected->getAlbedo();
+                    color = L_wi*((std::max(0., dot(N,omega_i))*std::max(0., dot(N_prime,(-1)*omega_i)))/(d2*densite_proba))*albedo_texture;
                     // if (color[0] > 0 && color[1] > 0 && color[2] > 0 ){
                     //     int a = 1;
                     // }
 
                     Vector omegaIndirect = get_random_cos(N);
                     Ray indirectRay = Ray(P+offset*N, omegaIndirect, R.getDepth()-1, true);
-                    Vector colorIndirect = sphereIntersected->getAlbedo()*getColor(indirectRay);
+                    // Vector colorIndirect = sphereIntersected->getAlbedo()*getColor(indirectRay);
+                    Vector colorIndirect = albedo_texture*getColor(indirectRay);
                     color = color + colorIndirect;
                 }
             }
@@ -1027,13 +1088,13 @@ private:
 };
 
 int main() {
-    int W = 128;
-    int H = 128;
+    int W = 512;
+    int H = 512;
     const double gamma = 2.2;
 
     TriangleMesh* m = new TriangleMesh(Vector(1., 1., 1.), false, false);
     m->readOBJ("cadnav.com_model/Models_F0202A090/cat.obj");
-    m->translation(Vector(0., -30., 0.), 0.6);
+    m->translation(Vector(0., -10., 0.), 0.6);
 
     // horizontal field of view
     const double fov = 60*(PI/180);
@@ -1045,7 +1106,8 @@ int main() {
     Sphere* centralSphereLeft = new Sphere(Vector(22., 0., 0.), 10, Vector(1.,1.,1.), false, false, 1.5);
     Sphere* centralSphereRight = new Sphere(Vector(-22., 0., 0.), 10, Vector(1.,1.,1.), true, false, 1.5);
     Sphere* leftSphere = new Sphere(Vector(0., 0., 1000.), 940, Vector(1., 0., 1.));
-    Sphere* rearSphere = new Sphere(Vector(0., -1000., 0.), 990, Vector(0., 0., 1.));
+    Sphere* rearSphere = new Sphere(Vector(0., -1000., 0.), 990, Vector(0., 0., 1.), false, false, 1.5, false, true);
+// Sphere(Vector center, double radius, Vector color, bool reflection=false, bool refraction=false, float refraction_index=1, bool source=false, bool is_procedural=false)
     Sphere* rightSphere = new Sphere(Vector(0.,0.,-1000.), 940, Vector(0., 1., 0.));
     Sphere* topSphere = new Sphere(Vector(0., 1000., 0.), 940, Vector(1., 0., 0.));
 //
@@ -1094,7 +1156,7 @@ int main() {
             image[(i*W + j) * 3 + 2] = blue;
         }
     }
-    stbi_write_png("test_shading_normal.png", W, H, 3, &image[0], 0);
+    stbi_write_png("test_procedural.png", W, H, 3, &image[0], 0);
  
     return 0;
 }
