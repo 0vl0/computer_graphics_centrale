@@ -9,10 +9,14 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-#include <limits>
 #include <algorithm>
 
 #include <string>
+#include <limits>
+#include <chrono>
+#include <ctime>   
+#include <iostream>
+
 
 const double PI = 3.1415926535897932; 
 
@@ -43,6 +47,13 @@ public:
         coords[0] /= x;
         coords[1] /= x;
         coords[2] /= x;
+        return *this;
+    }
+
+    Vector operator-=(const Vector& b){
+        coords[0] -= b[0];
+        coords[1] -= b[1];
+        coords[2] -= b[2];
         return *this;
     }
 
@@ -81,6 +92,10 @@ Vector operator+(const Vector& a, const Vector& b){
 
 Vector operator-(const Vector& a, const Vector& b){
     return Vector(a[0]-b[0], a[1]-b[1], a[2]-b[2]);
+}
+
+Vector operator/(const Vector&a, double b){
+    return Vector(a[0]/b, a[1]/b, a[2]/b);
 }
 
 // vectorial product
@@ -418,12 +433,6 @@ std::vector<TriangleIndices> vector_indices_triangles; // triangles
         bbox.m = Vector(1E9, 1E9, 1E9);
         bbox.M = Vector(-1E9, -1E9, -1E9);
 
-        // for(int i = index_triangle_start; i<index_triangle_end; i++){
-        //    for(int j = 0; j<3; j++){
-        //     bbox.m[j] = std::min(bbox.m[j], vector_vertices[vector_indices[i]][j]);
-        //     bbox.M[j] = std::max(bbox.M[j], vector_vertices[vector_indices[i]][j]);
-        //    } 
-        // }
         for(int i = index_triangle_start; i<index_triangle_end+1; i++){
             TriangleIndices indices_triangle_i = vector_indices_triangles[vector_indices[i]];
             int index_1 = indices_triangle_i.vtxi;
@@ -640,36 +649,7 @@ public:
         fclose(f);
         // init_bounding_box();
     }
- 
-    // bool intersect(const Ray& ray, double& t, Vector& N, Vector& P){
-    //     t = 1E19;
-    //     if (bbox.intersect(ray)){
-    //         for(int i =0; i<indices.size(); i++){
-    //             TriangleIndices indices_triangle_i = indices[i];
-    //             int index_1 = indices_triangle_i.vtxi;
-    //             int index_2 = indices_triangle_i.vtxj;
-    //             int index_3 = indices_triangle_i.vtxk;
 
-    //             Vector A = vertices[index_1];
-    //             Vector B = vertices[index_2];
-    //             Vector C = vertices[index_3];
-    //             Vector e1 = B-A;
-    //             Vector e2 = C-A;
-    //             N = cross(e1, e2);
-
-    //             Vector u = ray.getDirection();
-    //             Vector O = ray.getOrigin();
-
-    //             double beta = dot(e2, cross(A-O, u))/dot(u, N);
-    //             double gamma = -dot(e1, cross(A-O, u))/dot(u, N);
-    //             double alpha = 1-beta-gamma;
-    //             t = dot(A-O, N)/dot(u,N);
-    //             P = A + beta*e1 + gamma*e2;
-    //             if (t >= 0 && beta >= 0 && gamma >= 0 && alpha >= 0 && beta <= 1 && gamma <= 1 && alpha <= 1){return true;}
-    //         }
-    //     }
-    //     return false;
-    // }
 
     void init_bounding_box(){
         bbox.m = Vector(1E9, 1E9, 1E9);
@@ -683,15 +663,74 @@ public:
         }
     }
 
-    void translation(Vector translation_vector, double scale_factor){
+    void scale(double scale_factor){
+        for(int i = 0; i<vertices.size(); i++){
+            vertices[i] -= barycenter;
+            vertices[i] *= scale_factor;
+            vertices[i] += barycenter;
+        }
+    }
+
+    void translation(Vector translation_vector){
         for(int i = 0; i<vertices.size(); i++){
             vertices[i] += translation_vector;
-            vertices[i] *= scale_factor;
         }
-        // init_bounding_box();
+        barycenter += translation_vector;
+    }
+
+    void init_bvh(){
         bvh.init(vertices, indices);
-        // int a = indices.size();
         bvh.construct(0, indices.size()-1);
+    }
+
+    void init_rotation_matrix(Vector n, double angle){
+        // init rotation matrix with angle in degrees and rotation axis n
+        double a = (PI/180)*angle;
+        double c = cos(a);
+        double s = sin(a);
+        Vector L1(c+(1-c)*n[0]*n[0], (1-c)*n[0]*n[1]+s*n[2], (1-c)*n[0]*n[2]-s*n[1]);
+        Vector L2((1-c)*n[0]*n[1]-s*n[2], c+(1-c)*n[1]*n[1], (1-c)*n[1]*n[2]+s*n[0]);
+        Vector L3((1-c)*n[0]*n[2]+s*n[1], (1-c)*n[1]*n[2]-s*n[0], c+(1-c)*n[2]*n[2]);
+        rotation_matrix = {L1, L2, L3};
+    }
+
+    void rotate(){
+        // Rotation around barycenter with pre-initialized rotation matrix
+        Vector rotated_vector(0., 0., 0.);
+        for(int i = 0; i<vertices.size(); i++){
+            vertices[i] -= barycenter;
+            rotated_vector[0] = dot(rotation_matrix[0], vertices[i]);
+            rotated_vector[1] = dot(rotation_matrix[1], vertices[i]);
+            rotated_vector[2] = dot(rotation_matrix[2], vertices[i]);
+            vertices[i] = rotated_vector;
+            vertices[i] += barycenter;
+        }
+    }
+
+    void init_mesh_barycenter_v0(){
+        // naive computation of barycenter, average of vertices
+        Vector b(0., 0., 0.);
+        for(int i = 0; i<vertices.size(); i++){
+            b += vertices[i];
+        }
+        barycenter = Vector(b[0]/vertices.size(), b[1]/vertices.size(), b[2]/vertices.size());
+    }
+
+    void init_mesh_barycenter(){
+        // Compute barycenter of mesh as weighted sum of triangles' barycenters, weighted by trianglea area
+        Vector b(0., 0., 0.);
+        Vector p1, p2, p3;
+        double area = 0.0;
+        double curr_area = 0.0;
+        for(int i = 0; i<indices.size(); i++){
+            p1 = vertices[indices[i].vtxi];
+            p2 = vertices[indices[i].vtxj];
+            p3 = vertices[indices[i].vtxk];
+            curr_area = sqrt(cross(p2-p1, p3-p1).norm2())/2;
+            b += curr_area*((p1+p2+p3)/3.0);
+            area += curr_area;
+        }
+        barycenter = b/area;
     }
 
     bool intersect(const Ray& ray, double& t, Vector& N, Vector& P, Vector& albedo_texture){
@@ -790,8 +829,7 @@ public:
                 int u = std::min(vector_textures_W[group]-1, int(UV[0]));
                 int v = std::min(vector_textures_H[group]-1, int(UV[1]));
                 int index_pixel = v*vector_textures_W[group] + u;
-                // Vector a = vector_textures[group];
-                // float z = vector_textures[0][1000];
+
                 albedo_texture = Vector(vector_textures[group][index_pixel*3], vector_textures[group][index_pixel*3+1], vector_textures[group][index_pixel*3+2]);
             }
         }
@@ -807,6 +845,9 @@ public:
     BoundingBox bbox;
 
     BVH bvh;
+
+    Vector barycenter;
+    std::vector<Vector> rotation_matrix;
 };
 
 
@@ -814,13 +855,22 @@ public:
 
 class Scene{
 public:
-    Scene(Vector source, double I, float refraction_index = 1.0, int path_per_pixel = 16, int index_light=0){
+    Scene(Vector source, double I, float refraction_index = 1.0, int path_per_pixel = 50, int index_light=0){
         lightSource = source;
         lightIntensity = I;
         list_objects = {};
         n = refraction_index;
         rayPerPixel = path_per_pixel;
         index_light_sphere = index_light;
+        time = 0;
+    }
+
+    int get_time(){
+        return time;
+    }
+
+    void incr_time(){
+        time += 1;
     }
 
     int intersect(const Ray& ray, double& t, Vector& N, Vector &P, Vector& albedo_texture){
@@ -856,8 +906,6 @@ public:
         float y = sin(2*PI*r1)*sqrt(1-r2);
         float z = sqrt(r2);
 
-        // random cos??
-        // <w,N>/PI
 
         int minIndex = N.argmin();
         Vector T1, T2;
@@ -906,7 +954,7 @@ public:
             float offset = 0.001;
 
             if (sphereIntersected->is_procedural()){
-                if (int(abs(P[0])+abs(P[2]))%10 < 5){
+                if (int(abs(P[0])+abs(P[2])+abs(P[1])+get_time())%10 < 5){
                     albedo_texture = Vector(1., 1., 1.);
                 }
                 else{
@@ -920,8 +968,7 @@ public:
                 */
                 Ray reflectedRay(P+offset*N, R.getDirection() - 2*dot(R.getDirection(),N)*N, R.getDepth()-1);
                 reflectedRay.normalize();
-                // color = getColor(reflectedRay);
-                color = albedo_texture;
+                color = getColor(reflectedRay);
             }else if(sphereIntersected->isRefractive()){
                 /* --- Refractive surfaces ---
                 Fresnel law is used to compute the refraction R and transmission T coefficient.
@@ -946,7 +993,6 @@ public:
                 double k0 = pow((n1-n2),2)/pow((n1+n2),2);
                 double reflection_coef = k0 + (1-k0)*pow((1-abs(dot(N,R.getDirection()))),5); 
                 double rnd_number = rand() / double(RAND_MAX);
-                //rnd_number = 0;
                 if (rnd_number < reflection_coef){
                     // reflection
                     Ray reflectedRay(P-offset*N, R.getDirection() - 2*dot(R.getDirection(),N)*N, R.getDepth()-1);
@@ -978,30 +1024,16 @@ public:
                  Add a visiblity term, depending on position of the light and the intersection point.
                  It creates shadows if light is not visible from intersection point.
                 */
-                if (sphereIntersected->isLightSource()){
-                    // double a = 1/pow(2*PI*sphereIntersected.getRadius(),2);
+                if (sphereIntersected-> isLightSource()){
                     if (R.fromDiffuseObject()){
                         color = Vector(0., 0., 0.);
                     }
                     else{
-                        color = (getLightIntensity()/pow(2*PI*getLightSphere()->getRadius(),2))*Vector(1., 1., 1.);
+                        color = (getLightIntensity()/pow(2*PI*getLightSphere()->getRadius(),2))*sphereIntersected->getAlbedo();
                     }
-                    //color = Vector(1., 1., 1.);
-                    // int a = 1;
                 }
                 else{
                     // Direct contribution
-                    // Vector lightVector = getLightSource()-P;
-                    // double d2 = lightVector.norm2();
-                    // lightVector.normalize();
-
-                    // Ray PLight(P+offset*N, lightVector);
-                    // // Add normal light if light source is visible from P
-                    // int i_min_shadow = intersect(PLight, t);
-                    // if (i_min_shadow == -1 || t*t > d2){
-                    //     color = (getLightIntensity()/(4*pow(PI,2)*d2))*std::max(0.,dot(N,lightVector))*sphereIntersected.getAlbedo();
-                    // }
-
                     // D in the pdf document
                     Vector lightVector = getLightSphere()->getCenter()-P;
                     double d2 = lightVector.norm2();
@@ -1028,19 +1060,19 @@ public:
 
                     double L_wi = getLightIntensity()/(4.*pow(PI*getLightSphere()->getRadius(),2));
 
-                    double dot1 = dot(N,omega_i);
-                    double dot2 = dot(N_prime,(-1)*omega_i);
-
-                    // color =  L_wi*((std::max(0., dot(N,omega_i))*std::max(0., dot(N_prime,(-1)*omega_i)))/(d2*densite_proba))*sphereIntersected->getAlbedo();
-                    color = L_wi*((std::max(0., dot(N,omega_i))*std::max(0., dot(N_prime,(-1)*omega_i)))/(d2*densite_proba))*albedo_texture;
-                    // if (color[0] > 0 && color[1] > 0 && color[2] > 0 ){
-                    //     int a = 1;
-                    // }
+                    Ray PLight(P+offset*N, lightVector);
+                    Vector N_vis, P_vis, albedo_vis;
+                    int i_min_shadow = intersect(PLight, t, N_vis, P_vis, albedo_vis);
+                    
+                    // if (i_min_shadow == -1 || i_min_shadow == get_index_light_sphere() || t*t > d2){
+                    if (i_min_shadow == -1 || i_min_shadow == getObject(i_min)->isLightSource() || t*t > d2){
+                        color = L_wi*((std::max(0., dot(N,omega_i))*std::max(0., dot(N_prime,(-1)*omega_i)))/(d2*densite_proba))*albedo_texture;
+                    }
 
                     Vector omegaIndirect = get_random_cos(N);
                     Ray indirectRay = Ray(P+offset*N, omegaIndirect, R.getDepth()-1, true);
-                    // Vector colorIndirect = sphereIntersected->getAlbedo()*getColor(indirectRay);
                     Vector colorIndirect = albedo_texture*getColor(indirectRay);
+                    
                     color = color + colorIndirect;
                 }
             }
@@ -1085,6 +1117,7 @@ private:
     float n;
     int rayPerPixel;
     int index_light_sphere;
+    int time;
 };
 
 int main() {
@@ -1092,71 +1125,105 @@ int main() {
     int H = 512;
     const double gamma = 2.2;
 
-    TriangleMesh* m = new TriangleMesh(Vector(1., 1., 1.), false, false);
+    auto start = std::chrono::system_clock::now();
+
+    TriangleMesh* m = new TriangleMesh(Vector(1., 1., 1.), true, false);
     m->readOBJ("cadnav.com_model/Models_F0202A090/cat.obj");
-    m->translation(Vector(0., -10., 0.), 0.6);
+    m->init_mesh_barycenter();
+    m->scale(0.45);
+    m->translation(Vector(-1, -11., 14.));
+    m->init_rotation_matrix(Vector(0., 1., 0.), 1.2*39);
+    m->rotate();
+    m->init_bvh();
+    m->init_rotation_matrix(Vector(0., 1., 0.), 1.2);
 
     // horizontal field of view
     const double fov = 60*(PI/180);
     const Vector camera(0,0,55);
     
     Scene scene(Vector(-10, 20, 40), 1e10);
-    Sphere* lightSource = new Sphere(Vector(-10, 25, 40), 5, Vector(1.,1.,1.), true, false, 1.5, true);
-    Sphere* centralSphere = new Sphere(Vector(0., 0., 0.), 10, Vector(1.,1.,1.), false, true, 1.5);
-    Sphere* centralSphereLeft = new Sphere(Vector(22., 0., 0.), 10, Vector(1.,1.,1.), false, false, 1.5);
-    Sphere* centralSphereRight = new Sphere(Vector(-22., 0., 0.), 10, Vector(1.,1.,1.), true, false, 1.5);
-    Sphere* leftSphere = new Sphere(Vector(0., 0., 1000.), 940, Vector(1., 0., 1.));
-    Sphere* rearSphere = new Sphere(Vector(0., -1000., 0.), 990, Vector(0., 0., 1.), false, false, 1.5, false, true);
-// Sphere(Vector center, double radius, Vector color, bool reflection=false, bool refraction=false, float refraction_index=1, bool source=false, bool is_procedural=false)
-    Sphere* rightSphere = new Sphere(Vector(0.,0.,-1000.), 940, Vector(0., 1., 0.));
-    Sphere* topSphere = new Sphere(Vector(0., 1000., 0.), 940, Vector(1., 0., 0.));
-//
+    // Geometry(Vector color, bool reflection=false, bool refraction=false, float refraction_index=1, bool light_source=false, bool is_procedural=false){
+
+    Sphere* lightSource = new Sphere(Vector(-10, 20, 40), 5, Vector(1.,1.,1.), false, false, 1.5, true);
+    // Sphere* centralSphere = new Sphere(Vector(0., 0., 0.), 10, Vector(1.,1.,1.), false, true, 1.5);
+    // Sphere* centralSphereLeft = new Sphere(Vector(22., 0., 0.), 10, Vector(1.,1.,1.), false, false, 1.5);
+    // Sphere* centralSphereRight = new Sphere(Vector(-22., 0., 0.), 10, Vector(1.,1.,1.), true, false, 1.5);
+    // Sphere* barycenter = new Sphere(m->barycenter, .3, Vector(1., 0., 0.), false, false, 1.5, false, false);
+    // Sphere(Vector center, double radius, Vector color, bool reflection=false, bool refraction=false, float refraction_index=1, bool source=false, bool is_procedural=false)
+    Sphere* frontSphere = new Sphere(Vector(0., 0., 1000.), 940, Vector(1., 0., 1.), false, false, 1.5, false, true);
+    Sphere* bottomSphere = new Sphere(Vector(0., -998., 0.), 998, Vector(0., 0., 1.), true, false, 1.5, false, false);
+
+    Sphere* rearSphere = new Sphere(Vector(0.,0.,-1000.), 940, Vector(0., 1., 0.), false, false, 1.5, false, true);
+    Sphere* topSphere = new Sphere(Vector(0., 1000., 0.), 943, Vector(1., 0., 0.), false, false, 1.5, false, true);
+    Sphere* rightSphere = new Sphere(Vector(1000., 0., 0.), 950, Vector(0., 1., 1.), false, false, 1.5, false, true);
+    Sphere* leftSphere = new Sphere(Vector(-1000., 0., 0.), 950, Vector(1., 0., 1.), false, false, 1.5, false, true);
+
+
     scene.add(lightSource);
     // scene.add(centralSphere);
     // scene.add(centralSphereLeft);
-    // scene.add(centralSphereRight);
-    
-    scene.add(leftSphere);
+    // scene.add(centralSphererear);
+    // scene.add(barycenter);
+    scene.add(frontSphere);
+    scene.add(bottomSphere);
     scene.add(rearSphere);
-    scene.add(rightSphere);
     scene.add(topSphere);
+    scene.add(rightSphere);
+    scene.add(leftSphere);
 
     scene.add(m);
     
     std::vector<unsigned char> image(W*H*3, 0);
-    #pragma omp parallel for schedule(dynamic, 1)
-    for (int i = 0; i < H; i++) {
-        for (int j = 0; j < W; j++) {
-            // ray vector
+    int time = 0;
 
-            double red = 0; 
-            double green = 0;
-            double blue = 0;
-            #pragma omp parallel for num_threads(6)
-            for (int k=0; k<scene.getRayPerPixel(); k++){
-                //anti aliasing
-                double r1 = getRandom(1);
-                double r2 = getRandom(1);
-                double g1 = log(-2*log(r1))*cos(2*PI*r2)*0.25;
-                double g2 = log(-2*log(r1))*sin(2*PI*r2)*0.25;
-                Ray R(camera, Vector(camera[0]+j-W/2+0.5+g1, camera[1]+H/2-i-0.5+g2, camera[2]-W/(2*tan(fov/2))));
-                R.normalize();
+    for(int time=40; time<1200; time++){
+        std::cout << "processing t=" << time << std::endl;
+        #pragma omp parallel for //num_threads(8)
+        for (int i = 0; i < H; i++) {
+            for (int j = 0; j < W; j++) {
+                // ray vector
 
-                Vector color = scene.getColor(R);
-                red += color[0];
-                green += color[1];
-                blue += color[2];
+                double red = 0; 
+                double green = 0;
+                double blue = 0;
+                for (int k=0; k<scene.getRayPerPixel(); k++){
+                    //anti aliasing
+                    double r1 = getRandom(1);
+                    double r2 = getRandom(1);
+                    double g1 = log(-2*log(r1))*cos(2*PI*r2)*0.25;
+                    double g2 = log(-2*log(r1))*sin(2*PI*r2)*0.25;
+                    Ray R(camera, Vector(camera[0]+j-W/2+0.5+g1, camera[1]+H/2-i-0.5+g2, camera[2]-W/(2*tan(fov/2))));
+                    R.normalize();
+
+                    Vector color = scene.getColor(R);
+                    red += color[0];
+                    green += color[1];
+                    blue += color[2];
+                }
+                red = gammaCorrection(gamma, (red/scene.getRayPerPixel()));
+                green = gammaCorrection(gamma, (green/scene.getRayPerPixel()));
+                blue = gammaCorrection(gamma, (blue/scene.getRayPerPixel()));
+
+                image[(i*W + j) * 3 + 0] = red;
+                image[(i*W + j) * 3 + 1] = green;
+                image[(i*W + j) * 3 + 2] = blue;
             }
-            red = gammaCorrection(gamma, (red/scene.getRayPerPixel()));
-            green = gammaCorrection(gamma, (green/scene.getRayPerPixel()));
-            blue = gammaCorrection(gamma, (blue/scene.getRayPerPixel()));
-
-            image[(i*W + j) * 3 + 0] = red;
-            image[(i*W + j) * 3 + 1] = green;
-            image[(i*W + j) * 3 + 2] = blue;
         }
+        std::string filename = "images/img_" + std::to_string(time+1) + ".png";
+        stbi_write_png(filename.c_str(), W, H, 3, &image[0], 0);
+        scene.incr_time();
+        m->rotate();
+        m->init_bvh();
     }
-    stbi_write_png("test_procedural.png", W, H, 3, &image[0], 0);
+    
+   
+    auto end = std::chrono::system_clock::now();
+    std::chrono::duration<double> elapsed_seconds = end-start;
+    std::time_t end_time = std::chrono::system_clock::to_time_t(end);
+ 
+    std::cout << "finished computation at " << std::ctime(&end_time)
+              << "elapsed time: " << elapsed_seconds.count() << "s"
+              << std::endl;
  
     return 0;
 }
