@@ -705,6 +705,12 @@ public:
             vertices[i] = rotated_vector;
             vertices[i] += barycenter;
         }
+        for(int i = 0; i<normals.size(); i++){
+            rotated_vector[0] = dot(rotation_matrix[0], normals[i]);
+            rotated_vector[1] = dot(rotation_matrix[1], normals[i]);
+            rotated_vector[2] = dot(rotation_matrix[2], normals[i]);
+            normals[i] = rotated_vector;
+        }
     }
 
     void init_mesh_barycenter_v0(){
@@ -1132,8 +1138,8 @@ int main() {
     m->init_mesh_barycenter();
     m->scale(0.45);
     m->translation(Vector(-1, -11., 14.));
-    m->init_rotation_matrix(Vector(0., 1., 0.), 1.2*39);
-    m->rotate();
+    // m->init_rotation_matrix(Vector(0., 1., 0.), 180);
+    // m->rotate();
     m->init_bvh();
     m->init_rotation_matrix(Vector(0., 1., 0.), 1.2);
 
@@ -1176,7 +1182,7 @@ int main() {
     std::vector<unsigned char> image(W*H*3, 0);
     int time = 0;
 
-    for(int time=40; time<1200; time++){
+    for(int time=0; time<300; time++){
         std::cout << "processing t=" << time << std::endl;
         #pragma omp parallel for //num_threads(8)
         for (int i = 0; i < H; i++) {
@@ -1209,7 +1215,7 @@ int main() {
                 image[(i*W + j) * 3 + 2] = blue;
             }
         }
-        std::string filename = "images/img_" + std::to_string(time+1) + ".png";
+        std::string filename = "images_2/img_" + std::to_string(time+1) + ".png";
         stbi_write_png(filename.c_str(), W, H, 3, &image[0], 0);
         scene.incr_time();
         m->rotate();
