@@ -5,4 +5,6 @@ https://github.com/0vl0/computer_graphics_centrale/assets/58560467/91593288-30c3
 
 
 La vidéo complète à 30 fps est [video_x4.mp4](video_x4.mp4). <br>
-Les calculs de la vidéo avec la rotation des normales seront terminés ce soir. <br>
+
+
+https://github.com/0vl0/computer_graphics_centrale/assets/58560467/27e39c16-3a32-4211-bebf-f353e7fc4d11
